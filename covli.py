@@ -372,4 +372,11 @@ if __name__ == "__main__":
     h = np.array([1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 4, 6, 8, 10, 12, 14, 2, 4, 6, 8, 10, 12, 14])
     limits = Limits(h = h)
     limits.set_cms_inputs("data/cms_monov_inputs.pkl")
-    results = limits.limits(verbose = True)
+    results = limits.limits()
+
+    # Read in the results from the pickle file and print the observed and expected limits.
+    with open("limits/results.pkl", "rb") as f:
+        results = pickle.load(f)
+    print(f'Observed upper limit on theta at 95% CL: {results["obs_limit"]}')
+    for n_sigma in results["exp_limits"]:
+        print(f'Expected upper limit on theta at 95% CL for n_sigma = {n_sigma}: {results["exp_limits"][n_sigma]}')
