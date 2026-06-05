@@ -19,14 +19,14 @@ class Limits:
 
     Attributes:
     -----------
-    C: ndarray
+    V: ndarray
         covariance matrix of the measurements
-    m: ndarray
+    n: ndarray
         measurement vector - the observed data yields
-    t0: ndarray
-        background-only prediction - the expected yields under the alternative hypothesis (theta = 0)
-    h: ndarray
-        signal template - the expected signal yields under the theta = 1 hypothesis
+    b: ndarray
+        background-only prediction - the expected yields under the alternative hypothesis (mu = 0)
+    s: ndarray
+        signal template - the expected signal yields under the mu = 1 hypothesis
     outdir: str
         output directory for the plots and results
         Default is "./limits".
@@ -37,6 +37,7 @@ class Limits:
         self.b = b
         self.s = s
         self.outdir = outdir
+        self.init_theta = np.zeros_like(self.b)
         if not os.path.exists(outdir):
             os.makedirs(outdir)
 
@@ -55,101 +56,127 @@ class Limits:
         self.V = inputs['V']
         self.n = inputs['n']
         self.b = inputs['b']
+        self.init_theta = np.zeros_like(self.b)
 
-    def data_yields(self, asimov = False):
+    def data_yields(self, asimov = False, mu = None):
         """
         Return the data yields to be used in the likelihood calculation.
 
         Parameters:
         -----------
         asimov: bool
-            if True, the Asimov dataset (m = t0) will be returned, otherwise the observed data yields (m) will be returned.
+            If True, the Asimov dataset will be returned, otherwise the observed data yields (n) will be returned.
+        mu: float or None
+            The value of the signal strength parameter to be used in the Asimov dataset.
         """
         if not asimov:
-            return self.m
+            return self.n
         else:
-            return self.t0
+            if mu is None:
+                raise ValueError("mu must be provided when asimov is True")
+            
+            nll = self.nll_factory(self.n)
+            minuit = Minuit(nll, [mu] + list(self.init_theta))
+            minuit.fixed[0] = True
+            minuit.migrad()
+            minuit.hesse()
+            hat_hat_theta = np.array(minuit.values[1:])
 
-    def nll_factory(self, asimov = False):
+            # Asimov dataset
+            return mu * self.s + self.b + hat_hat_theta
+
+    def nll_factory(self, n = None):
         """
         Factory method to create the negative log-likelihood function.
         
-        The negative log-likelihood function is -2 * log L(theta) = (m - (t0 + h * theta))^T * C^-1 * (m - (t0 + h * theta)), where m is the data yields, t0 is the background prediction, h is the signal template and C is the covariance matrix.
+        The negative log-likelihood function is -2 * log L(mu, theta) = -2 \sum_i (n_i \ln(\mu s_i + b_i + \theta_i) - (\mu s_i + b_i + \theta_i)) + \sum_{ij}\theta_i V^{-1}_{ij} \theta_j, where n is the data yields, b is the prefit background prediction, s is the signal template and V^{-1} is inverse of the covariance matrix.
 
         Parameters:
         -----------
-        h: ndarray
-            signal template - the expected signal yields under the theta = 1 hypothesis
-        asimov: bool
-            see the data_yields method
+        n: ndarray
+            The data yields to be used in the likelihood calculation.
+            It can be the observed data yields or an Asimov dataset or a pseudo-experiment dataset.
+            If None, the observed data yields (self.n) will be used.
+
+        Returns:
+        --------
+        nll: function
+            The negative log-likelihood function.
         """
 
-        m = self.data_yields(asimov)
+        if n is None:
+            n = self.n
 
-        def nll(theta):
-            d = np.array(m) - (self.t0 + self.h * theta)
-            return d.T @ np.linalg.inv(self.C) @ d
-            
+        def nll(params):        
+            mu    = params[0]
+            theta = np.array(params[1:])
+            t = mu * self.s + self.b + theta
+            value = -2 * np.sum(n * np.log(t) - t)
+            value += 2 * np.sum(scipy.special.gammaln(n + 1))
+            value += theta @ np.linalg.inv(self.V) @ theta
+            return value
+
         return nll
     
-    def find_minimum(self, nll, initial_theta):
+    def find_minimum(self, nll, init_mu = 0, init_theta = None, fix_mu = False):
         """
         Find the minimum of the negative log-likelihood function using the Minuit minimizer.
         
         Parameters:
         -----------
         nll: function
-            the negative log-likelihood function to be minimized.
-            It is a function of a single variable theta, which is the signal strength parameter.
-        initial_theta: float
-            the initial value of theta to start the minimization from
+            The negative log-likelihood function to be minimized.
+            It is a function of the signal strength mu and the nuisance parameters theta.
+        init_mu: float
+            The initial value of mu to start the minimization from
+        init_theta: float
+            The initial value of theta to start the minimization from
+        fix_mu: bool
+            If True, the signal strength parameter mu will be fixed to the value of init_mu during the minimization, otherwise it will be allowed to float.
         """
 
-        minuit = Minuit(nll, np.array([initial_theta]))
+        if init_theta is None:
+            init_theta = self.init_theta
+
+        minuit = Minuit(nll, [init_mu] + list(init_theta))
+        if fix_mu:
+            minuit.fixed[0] = True
         minuit.migrad()
         minuit.hesse()
 
         # Return the value at the minimum and the uncertainty on that value.
-        return minuit.values[0], minuit.errors[0]
+        # Also return the value of the negative log-likelihood at the minimum.
+        return minuit.values[0], minuit.errors[0], minuit.fval
 
-    def theta_uncertainty(self, nll, theta):
+    def test_statistic(self, nll, mu, init_theta = None):
         """
-        Calculate the uncertainty on theta at a given value of theta using the curvature of the negative log-likelihood function.
+        Calculate the profile likelihood ratio test statistic value for given mu.
+
+        The test statistic is defined as q(mu) = -2 * log (L(hat_hat_mu, hat_hat_theta) / L(hat_mu, hat_theta))
+        if hat_mu <= mu, and q(mu) = 0 otherwise.
+
+        Parameters:
+        -----------
+        mu: float
+            The hypothesized value of mu
+        init_theta: ndarray or None
+            The initial values of the nuisance parameters to start the minimization from.
+            If None, the default values self.init_theta will be used.
+        """
         
-        Parameters:
-        -----------
-        nll: function
-            the negative log-likelihood function
-        theta: float
-            the value of theta at which to calculate the uncertainty
-        """
-        minuit = Minuit(nll, np.array([theta]))
-        minuit.hesse()
-        return minuit.errors[0]
+        # Denominator.
+        hat_mu, _, global_min = self.find_minimum(nll, init_mu = mu, init_theta = init_theta, fix_mu = False)
 
-    def test_statistic(self, theta, asimov = False):
-        """
-        Calculate the profile likelihood ratio test statistic value for given theta.
+        # Return zero if mu_hat > mu.
+        if hat_mu > mu:
+            return 0
 
-        The test statistic is defined as q(theta) = -2 * log (L(theta) / L(theta_hat)),
-        where L(theta) is the likelihood at the given value of theta (the profile likelihood).
-        Note that the likelihood in covariance representation is equal to the profile likelihood in the nuisance parameter representation, as discussed in the paper https://arxiv.org/abs/2307.04007.
-        L(theta_hat) is the likelihood at the best-fit value of theta (theta_hat).
+        # Nominator.
+        _, _, constraint_min = self.find_minimum(nll, init_mu = mu, init_theta = init_theta, fix_mu = True)
 
-        Parameters:
-        -----------
-        theta: float
-            the hypothesized value of theta
-        asimov: bool
-            see the data_yields method
-        """
-        nll = self.nll_factory(asimov)
-        nll_profile = nll(theta)
-        theta_hat, _ = self.find_minimum(nll, initial_theta = theta)
-        nll_global = nll(theta_hat)
-        return nll_profile - nll_global
+        return constraint_min - global_min
 
-    def p_value(self, theta, asimov = False):
+    def p_value(self, test_statistic_value):
         """
         Calculate the p-value.
         
@@ -157,96 +184,67 @@ class Limits:
 
         Parameters:
         -----------
-        theta: float
-            the hypothesized value of theta
-        asimov: bool
-            see the data_yields method
+        test_statistic_value: float
+            The test statistic value for which to calculate the p-value.
         """
-        ts_obs = self.test_statistic(theta, asimov)
-        return scipy.stats.chi2.sf(ts_obs, df = 1)
-    
-    def non_centrality_parameter(self, theta, asimov = False):
-        """
-        Non-centrality parameter for the test statistic distribution under the background-only hypothesis.
+        return scipy.stats.chi2.sf(test_statistic_value, df = 1)
 
-        See the cls_value method documentation for more details.
-        """
-
-        # calculate the sigma for the non-centrality parameter
-        nll = self.nll_factory(asimov)
-        _, sigma = self.find_minimum(nll, initial_theta = theta)
-
-        # non-centrality parameter for the background-only hypothesis
-        return theta ** 2 / sigma ** 2
-
-    
-    def cls_value(self, theta, asimov = False, n_sigma = None):
-        """
-        Calculate the CLs value.
-
-        The test statistic distribution under the background-only hypothesis is a non-central chi2 (NC chi2) distribution according to the paper https://arxiv.org/abs/1007.1727.
-        The needed variance of the signal strength estimator (sigma^2)
-        should be evaluated at the point theta = 0.
-        However, it was checked that 0 is the only value for which the corresponding NC chi2
-        distribution does not describe the actual distribution (obtained using pseudo-experiments).
-        Actually, ~any value larger than 0 can be used,
-        as the resulting variance is the same for all theta > 0.
-        This function uses the theta_hat value to evaluate the sigma parameter.
-
-        Parameters:
-        -----------
-        theta: float
-            the hypothesized value of theta
-        asimov: bool
-            see the data_yields method
-        n_sigma: float or None
-            Number of standard deviations for expected limits.
-            This parameter is ignored if asimov is False.
-            If None, calculate the expected CLs.
-            If a number, calculate the expected CLs for that number of standard deviations.
-        """
-        ts = self.test_statistic(theta, asimov)
-        nc = self.non_centrality_parameter(theta, asimov)
-
-        # shift the observed test statistic if when using the Asimov dataset
-        # and n_sigma is not None
-        if asimov and n_sigma is not None:
-            # For expected limits, we evaluate the median of the background-only test statistic distribution, and the quantiles corresponding to the n_sigma standard deviations, as the observed test statistic value.
-            probability = scipy.stats.norm.cdf(n_sigma)
-            ts = scipy.stats.ncx2.ppf(probability, df = 1, nc = nc)
-
-        # p-values
-        p_bkg = scipy.stats.ncx2.sf(ts, df = 1, nc = nc)
-        p_sig = scipy.stats.chi2.sf(ts, df = 1)
-
-        return p_sig / p_bkg
-    
-    
-    def p_bkg_value(self, theta, asimov = False):
+    def p_bkg_value(self, test_statistic_value, non_centrality):
         """
         Calculate the p-value from the "denominator of the CLs method".
 
-        It is the integral from the observed test statistic value to infinity of the test statistic distribution under the background-only hypothesis.
+        It is the integral from the test statistic value to infinity of the test statistic distribution under the background-only hypothesis.
+        The cumulative distribution of the test statistic under the background-only hypothesis is given by Eq. (57) in https://arxiv.org/pdf/1007.1727.pdf.
+        The non-centrality parameter of the related NC chi2 distribution is estimated as the value of the test statistic for the Asimov dataset with mu = 0.
 
         Parameters:
         -----------
-        theta: float
-            the hypothesized value of theta
-        asimov: bool
-            see the data_yields method
+        test_statistic_value: float
+            The test statistic value for which to calculate the p-value.
+        non_centrality: float
+            The non-centrality parameter of the test statistic distribution under the background-only hypothesis.
         """
-        ts = self.test_statistic(theta, asimov)
-        nc = self.non_centrality_parameter(theta, asimov)
-        return scipy.stats.ncx2.sf(ts, df = 1, nc = nc)
+        return scipy.stats.norm.sf(np.sqrt(test_statistic_value) - np.sqrt(non_centrality))
+
+    def cls_value(self, test_statistic_value, non_centrality, n_sigma = None):
+        """
+        Calculate the CLs value.
+
+        Parameters:
+        -----------
+        test_statistic_value: float
+            The test statistic value for which to calculate the CLs value.
+        non_centrality: float
+            The non-centrality parameter of the test statistic distribution under the background-only hypothesis.
+        n_sigma: float or None
+            Number of standard deviations for expected limits.
+            If None, calculate the CLs using the provided test statistic value.
+            Case:
+              0: the median of the background-only test statistic distribution is used as the observed test statistic value.
+              1: the ~0.84 quantile of the background-only test statistic distribution is used as the observed test statistic value.
+              -1: the ~0.16 quantile of the background-only test statistic distribution is used as the observed test statistic value.
+              etc.
+        """
+
+        if n_sigma is not None:
+            # For expected limits, we evaluate the median of the background-only test statistic distribution, and the quantiles corresponding to the n_sigma standard deviations, as the observed test statistic value.
+            probability = scipy.stats.norm.cdf(n_sigma)
+            test_statistic_value = scipy.stats.ncx2.ppf(probability, df = 1, nc = non_centrality)
+
+        # p-values
+        p_bkg = self.p_bkg_value(test_statistic_value, non_centrality)
+        p_sig = self.p_value(test_statistic_value)
+
+        return p_sig / p_bkg
     
-    def find_upper_limit(self, theta_values, cls_values, cl = 95):
+    def find_upper_limit(self, mu_values, cls_values, cl = 95):
         """
-        Find the upper limit on theta at the predefined confidence level.
+        Find the upper limit on mu at the predefined confidence level.
 
         Parameters:
         -----------
-        theta_values: array-like
-            the values of theta to scan over.
+        mu_values: array-like
+            the values of mu to scan over.
         cls_values: array-like
             the corresponding CLs values.
         cl: float
@@ -254,102 +252,112 @@ class Limits:
             It is in percents, so it should be between 0 and 100.
             The type I error alpha is calculated as 1 - cl / 100.
             Default cl is 95, corresponding to the 95% confidence level,
-            and the upper limit is calculated as the value of theta
+            and the upper limit is calculated as the value of mu
             for which the CLs value is equal to 0.05.
 
         Returns:
         --------
         upper_limit: float or None
-            the upper limit on theta at the predefined confidence level.
+            The upper limit on mu at the predefined confidence level.
         """
         upper_limit = None
-        i = len(theta_values) - 1
+        i = len(mu_values) - 1
         while i > 0 and cls_values[i] < 0.05:
             if cls_values[i - 1] > 0.05:
                 # Perform the linear interpolation.
-                theta1 = theta_values[i - 1]
-                theta2 = theta_values[i]
+                mu1 = mu_values[i - 1]
+                mu2 = mu_values[i]
                 cls1 = cls_values[i - 1]
                 cls2 = cls_values[i]
-                upper_limit = theta1 + (0.05 - cls1) * (theta2 - theta1) / (cls2 - cls1)
+                upper_limit = mu1 + (0.05 - cls1) * (mu2 - mu1) / (cls2 - cls1)
             i -= 1
         return upper_limit
 
 
-    def limits(self, theta_values = None, verbose = False):
+    def limits(self, mu_values = None, verbose = False):
         """
-        Scan over the values of theta and calculate the p-values for each of them.
+        Scan over the values of mu and calculate the p-values for each of them.
 
-        The CLs, p, and p_bkg values are calculated for each value of theta in the theta_values array.
-        They are plotted as a function of theta.
+        The CLs, p, and p_bkg values are calculated for each value of mu in the mu_values array.
+        They are plotted as a function of mu.
         Then, the expected CLs values and their +-1sigma, +-2sigma bands are calculated.
-        They are also plotted as a function of theta, together with the observed CLs values.
-        Finally, the upper limit on theta at 95% confidence level is calculated as the value of theta for which the CLs value is equal to 0.05.
+        They are also plotted as a function of mu, together with the observed CLs values.
+        Finally, the upper limit on mu at 95% confidence level is calculated as the value of mu for which the CLs value is equal to 0.05.
         The same is done for the expected limits and their bands.
 
         Parameters:
         -----------
-        theta_values: array-like
-            the values of theta to scan over.
+        mu_values: array-like
+            the values of mu to scan over.
             If None, a default array of 20 equidistant values from 0 to 1 is used.
         verbose: bool
             if True, print the calculated limits
         """
 
-        if theta_values is None:
-            theta_values = np.linspace(0, 1, 20)
+        if mu_values is None:
+            mu_values = np.linspace(0, 10, 10)
 
-        # Theta scan with the observed data.
+        # mu scan with the observed data.
+        nll = self.nll_factory()
+        n_asimov = self.data_yields(asimov = True, mu = 0)
+        nll_asimov = self.nll_factory(n_asimov)
         cls_values = []
         p_values = []
         p_bkg_values = []
-        for theta in theta_values:
-            cls_values.append(self.cls_value(theta))
-            p_values.append(self.p_value(theta))
-            p_bkg_values.append(self.p_bkg_value(theta))
+        for mu in mu_values:
+            ts = self.test_statistic(nll, mu)
+            nc = self.test_statistic(nll_asimov, mu)
+            cls_values.append(self.cls_value(ts, nc))
+            p_values.append(self.p_value(ts))
+            p_bkg_values.append(self.p_bkg_value(ts, nc))
 
-        # Plot the p-value as a function of theta:
-        plt.plot(theta_values, p_values, marker='o', label='p')
-        plt.plot(theta_values, p_bkg_values, marker='s', label='p_bkg')
-        plt.plot(theta_values, cls_values, marker='^', label='CLs')
+        # Plot the p-value as a function of mu:
+        plt.plot(mu_values, p_values, marker='o', label='p')
+        plt.plot(mu_values, p_bkg_values, marker='s', label='p_bkg')
+        plt.plot(mu_values, cls_values, marker='^', label='CLs')
         plt.axhline(0.05, color='red', linestyle='dashed', label='p-value = 0.05')
-        plt.xlabel(r'$\theta$')
+        plt.xlabel(r'$\mu$')
         plt.ylabel('p-value')
-        plt.title('p-value as a function of theta')
+        plt.title('p-value as a function of mu')
         plt.ylim(0, 1)
         plt.legend()
-        plt.savefig(f'{self.outdir}/theta_scan_0.png')
+        plt.savefig(f'{self.outdir}/mu_scan_0.png')
         plt.close()
 
         # Expected limits and their bands.
         exp_cls_values = {n_sigma: [] for n_sigma in [-2, -1, 0, 1, 2]}
-        for theta in theta_values:
+        exp_cls_values['asimov'] = []
+        for mu in mu_values:
+            ts_dummy = 0
+            nc = self.test_statistic(nll_asimov, mu)
             for n_sigma in [-2, -1, 0, 1, 2]:
-                cls_value = self.cls_value(theta, asimov = True, n_sigma = n_sigma)
-                exp_cls_values[n_sigma].append(cls_value)      
+                cls_value = self.cls_value(ts_dummy, nc, n_sigma = n_sigma)
+                exp_cls_values[n_sigma].append(cls_value)
+            exp_cls_values['asimov'].append(self.cls_value(nc, nc))
 
         # Draw the expected limit as a black dashed line.
         # Draw the +- 1 sigma and +/- 2 sigma expected limits as green and yellow bands, respectively.
         # Draw the observed CLs values as a black solid line.
-        plt.plot(theta_values, exp_cls_values[0], color='black', linestyle='dashed', label='Exp.')
-        plt.fill_between(theta_values, exp_cls_values[-1], exp_cls_values[1], color='green', alpha=0.5, label='Exp. ± 1σ')
-        plt.fill_between(theta_values, exp_cls_values[-2], exp_cls_values[2], color='yellow', alpha=0.5, label='Exp. ± 2σ')
-        plt.plot(theta_values, cls_values, color='black', label='Obs.')
+        plt.plot(mu_values, exp_cls_values[0], color='black', linestyle='dashed', label='Exp.')
+        plt.fill_between(mu_values, exp_cls_values[-1], exp_cls_values[1], color='green', alpha=0.5, label='Exp. ± 1σ')
+        plt.fill_between(mu_values, exp_cls_values[-2], exp_cls_values[2], color='yellow', alpha=0.5, label='Exp. ± 2σ')
+        plt.plot(mu_values, exp_cls_values['asimov'], color='blue', linestyle='dashed', label='Exp. As.')
+        plt.plot(mu_values, cls_values, color='black', label='Obs.')
         plt.axhline(0.05, color='red', linestyle='dashed', label='p = 0.05')
-        plt.xlabel(r'$\theta$')
+        plt.xlabel(r'$\mu$')
         plt.ylabel('CLs')
-        plt.title('CLs as a function of theta')
+        plt.title('CLs as a function of mu')
         plt.legend()
-        plt.savefig(f'{self.outdir}/theta_scan_1.png')
+        plt.savefig(f'{self.outdir}/mu_scan_1.png')
         plt.close()
 
         # Calculate the upper limit on theta at 95% confidence level.
-        obs_limit = self.find_upper_limit(theta_values, cls_values)
-        exp_limits = {n_sigma: self.find_upper_limit(theta_values, exp_cls_values[n_sigma]) for n_sigma in exp_cls_values}
+        obs_limit = self.find_upper_limit(mu_values, cls_values)
+        exp_limits = {n_sigma: self.find_upper_limit(mu_values, exp_cls_values[n_sigma]) for n_sigma in exp_cls_values}
 
         # Pickle the results to a file.
         results = {
-            'theta_values': theta_values,
+            'mu_values': mu_values,
             'cls_values': cls_values,
             'p_values': p_values,
             'p_bkg_values': p_bkg_values,
@@ -362,21 +370,21 @@ class Limits:
 
         # Print the results if verbose is True.
         if verbose:
-            print(f'Observed upper limit on theta at 95% CL: {obs_limit}')
+            print(f'Observed upper limit on mu at 95% CL: {obs_limit}')
             for n_sigma in exp_limits:
-                print(f'Expected upper limit on theta at 95% CL for n_sigma = {n_sigma}: {exp_limits[n_sigma]}')
+                print(f'Expected upper limit on mu at 95% CL for n_sigma = {n_sigma}: {exp_limits[n_sigma]}')
 
         return results
     
 if __name__ == "__main__":
-    h = np.array([1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 4, 6, 8, 10, 12, 14, 2, 4, 6, 8, 10, 12, 14])
-    limits = Limits(h = h)
-    limits.set_cms_inputs("data/cms_monov_inputs.pkl")
-    results = limits.limits()
+    s = np.array([1.006524, 0.948773, 0.9858989, 1.056026, 1.072526, 1.167403, 1.485036, 1.592289, 1.612914, 1.678916, 2.165677, 2.330681, 2.211054, 2.145052, 2.025424, 2.392558, 2.149177, 1.827419, 1.905796, 1.563413, 1.518037, 2.037799, 1.151231, 1.056284, 1.145297, 1.240244, 1.258046, 1.418269, 1.620031, 2.160042, 2.225318, 2.302462, 2.990827, 3.251931, 3.0383, 3.032366, 2.866209, 3.412154, 2.907748, 2.516092, 2.676315, 2.290593, 2.189712, 2.854341])
+    limits = Limits(s = s)
+    limits.set_cms_inputs("data/cms_monoj_inputs.pkl")
+    results = limits.limits(np.linspace(0, 10, 100))
 
     # Read in the results from the pickle file and print the observed and expected limits.
     with open("limits/results.pkl", "rb") as f:
         results = pickle.load(f)
-    print(f'Observed upper limit on theta at 95% CL: {results["obs_limit"]}')
+    print(f'Observed upper limit on mu at 95% CL: {results["obs_limit"]}')
     for n_sigma in results["exp_limits"]:
-        print(f'Expected upper limit on theta at 95% CL for n_sigma = {n_sigma}: {results["exp_limits"][n_sigma]}')
+        print(f'Expected upper limit on mu at 95% CL for n_sigma = {n_sigma}: {results["exp_limits"][n_sigma]}')
