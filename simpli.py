@@ -378,9 +378,10 @@ class Limits:
     
 if __name__ == "__main__":
     s = np.array([1.006524, 0.948773, 0.9858989, 1.056026, 1.072526, 1.167403, 1.485036, 1.592289, 1.612914, 1.678916, 2.165677, 2.330681, 2.211054, 2.145052, 2.025424, 2.392558, 2.149177, 1.827419, 1.905796, 1.563413, 1.518037, 2.037799, 1.151231, 1.056284, 1.145297, 1.240244, 1.258046, 1.418269, 1.620031, 2.160042, 2.225318, 2.302462, 2.990827, 3.251931, 3.0383, 3.032366, 2.866209, 3.412154, 2.907748, 2.516092, 2.676315, 2.290593, 2.189712, 2.854341])
+    s = np.array([1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 4, 6, 8, 10, 12, 14, 2, 4, 6, 8, 10, 12, 14]) * 0.5
     limits = Limits(s = s)
-    limits.set_cms_inputs("data/cms_monoj_inputs.pkl")
-    results = limits.limits(np.linspace(0, 10, 100))
+    limits.set_cms_inputs("data/cms_monov_inputs.pkl")
+    results = limits.limits(np.linspace(0, 1, 20))
 
     # Read in the results from the pickle file and print the observed and expected limits.
     with open("limits/results.pkl", "rb") as f:
