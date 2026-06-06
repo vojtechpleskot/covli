@@ -180,14 +180,16 @@ class Limits:
         """
         Calculate the p-value.
         
-        The test statistic distribution under the background-only hypothesis is a chi2 distribution with 1 degree of freedom, according to the paper https://arxiv.org/abs/1007.1727.
+        The test statistic distribution under the background-only hypothesis is a half-chi2 distribution with 1 degree of freedom, according to the paper https://arxiv.org/abs/1007.1727.
+        Its cumulative distribution is given by Eq. (58) in the same paper,
+        and it is the gaussian CDF of the square root of the test statistic value.
 
         Parameters:
         -----------
         test_statistic_value: float
             The test statistic value for which to calculate the p-value.
         """
-        return scipy.stats.chi2.sf(test_statistic_value, df = 1)
+        return scipy.stats.norm.sf(np.sqrt(test_statistic_value))
 
     def p_bkg_value(self, test_statistic_value, non_centrality):
         """
@@ -229,7 +231,11 @@ class Limits:
         if n_sigma is not None:
             # For expected limits, we evaluate the median of the background-only test statistic distribution, and the quantiles corresponding to the n_sigma standard deviations, as the observed test statistic value.
             probability = scipy.stats.norm.cdf(n_sigma)
-            test_statistic_value = scipy.stats.ncx2.ppf(probability, df = 1, nc = non_centrality)
+            sqrt_test_statistic_value = scipy.stats.norm.ppf(probability, loc = np.sqrt(non_centrality))
+            if sqrt_test_statistic_value < 0:
+                test_statistic_value = 0
+            else:
+                test_statistic_value = sqrt_test_statistic_value ** 2
 
         # p-values
         p_bkg = self.p_bkg_value(test_statistic_value, non_centrality)
@@ -377,11 +383,12 @@ class Limits:
         return results
     
 if __name__ == "__main__":
-    s = np.array([1.006524, 0.948773, 0.9858989, 1.056026, 1.072526, 1.167403, 1.485036, 1.592289, 1.612914, 1.678916, 2.165677, 2.330681, 2.211054, 2.145052, 2.025424, 2.392558, 2.149177, 1.827419, 1.905796, 1.563413, 1.518037, 2.037799, 1.151231, 1.056284, 1.145297, 1.240244, 1.258046, 1.418269, 1.620031, 2.160042, 2.225318, 2.302462, 2.990827, 3.251931, 3.0383, 3.032366, 2.866209, 3.412154, 2.907748, 2.516092, 2.676315, 2.290593, 2.189712, 2.854341])
     s = np.array([1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 4, 6, 8, 10, 12, 14, 2, 4, 6, 8, 10, 12, 14]) * 0.5
+    s = np.array([1.006524, 0.948773, 0.9858989, 1.056026, 1.072526, 1.167403, 1.485036, 1.592289, 1.612914, 1.678916, 2.165677, 2.330681, 2.211054, 2.145052, 2.025424, 2.392558, 2.149177, 1.827419, 1.905796, 1.563413, 1.518037, 2.037799, 1.151231, 1.056284, 1.145297, 1.240244, 1.258046, 1.418269, 1.620031, 2.160042, 2.225318, 2.302462, 2.990827, 3.251931, 3.0383, 3.032366, 2.866209, 3.412154, 2.907748, 2.516092, 2.676315, 2.290593, 2.189712, 2.854341])
     limits = Limits(s = s)
     limits.set_cms_inputs("data/cms_monov_inputs.pkl")
-    results = limits.limits(np.linspace(0, 1, 20))
+    limits.set_cms_inputs("data/cms_monoj_inputs.pkl")
+    results = limits.limits(np.linspace(0, 10, 20))
 
     # Read in the results from the pickle file and print the observed and expected limits.
     with open("limits/results.pkl", "rb") as f:
