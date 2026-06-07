@@ -38,6 +38,7 @@ class Limits:
         self.s = s
         self.outdir = outdir
         self.init_theta = np.zeros_like(self.b)
+        self.asymptotic = True
         if not os.path.exists(outdir):
             os.makedirs(outdir)
 
@@ -57,6 +58,42 @@ class Limits:
         self.n = inputs['n']
         self.b = inputs['b']
         self.init_theta = np.zeros_like(self.b)
+
+    def generate_pseudoexperiments(self, n_toys = 1000):
+        """
+        Generate pseudo-experiments to determine the distributions of the test statistic needed for the CLs method.
+
+        Parameters:
+        -----------
+        n_toys: int
+            The number of pseudo-experiments to generate.
+        """
+        self.asymptotic = False
+        self.signal_distribution = self.generate_signal_distribution(n_toys)
+        self.background_distribution = self.generate_background_distribution(n_toys)
+        return
+    
+    def generate_signal_distribution(self, n_toys):
+        """
+        Generate the distribution of the test statistic under the signal+background hypothesis (mu = 1).
+
+        Parameters:
+        -----------
+        n_toys: int
+            The number of pseudo-experiments to generate.
+        """
+        return
+    
+    def generate_background_distribution(self, n_toys):
+        """
+        Generate the distribution of the test statistic under the background-only hypothesis (mu = 0).
+
+        Parameters:
+        -----------
+        n_toys: int
+            The number of pseudo-experiments to generate.
+        """
+        return
 
     def data_yields(self, asimov = False, mu = None):
         """
@@ -381,6 +418,20 @@ class Limits:
                 print(f'Expected upper limit on mu at 95% CL for n_sigma = {n_sigma}: {exp_limits[n_sigma]}')
 
         return results
+    
+    # Generate the pseudo-experiments.
+    def generate_pseudo_experiments(self, mu, nu, n_toys = 1000):
+        pseudo_experiments = np.random.poisson(nu, size=(n_toys, len(nu)))
+
+        ts_toys = []
+        for i in range(n_toys):
+            pseudo_n = pseudo_experiments[i]
+            nll = self.nll_factory(pseudo_n)
+            ts = self.test_statistic(nll, mu, self.init_theta)
+            ts_toys.append(ts)
+
+        return np.array(ts_toys)
+
     
 if __name__ == "__main__":
     s = np.array([1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 4, 6, 8, 10, 12, 14, 2, 4, 6, 8, 10, 12, 14]) * 0.5
