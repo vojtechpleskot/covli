@@ -32,16 +32,17 @@ class Limits:
         Default is "./limits".
     """
     def __init__(self, V = None, n = None, b = None, s = None, outdir = "./limits"):
-        self.V                     = V
-        self.n                     = n
-        self.b                     = b
-        self.s                     = s
-        self.outdir                = outdir
-        self.init_theta            = np.zeros_like(self.b)
-        self.asymptotic            = True
-        self.n_pseudoexperiments   = None
-        self.bkg_pseudoexperiments = None
-        self.sig_pseudoexperiments = None
+        self.V                      = V
+        self.n                      = n
+        self.b                      = b
+        self.s                      = s
+        self.outdir                 = outdir
+        self.init_theta             = np.zeros_like(self.b)
+        self.non_centrality         = 0
+        self.asymptotic             = True
+        self.n_pseudoexperiments    = 1000
+        self.dict_pseudoexperiments = {}
+        self.mu_tested              = 1
         if not os.path.exists(outdir):
             os.makedirs(outdir)
 
@@ -62,7 +63,7 @@ class Limits:
         self.b = inputs['b']
         self.init_theta = np.zeros_like(self.b)
 
-    def pseudoexperiments(self, n_pseudoexperiments = 1000):
+    def pseudoexperiments(self, n_pseudoexperiments = 1000, read_pseudoexperiments_from_file = True, pseudoexperiments_file = "limits/dict_pseudoexperiments.pkl"):
         """
         Use pseudo-experiments to determine the distributions of the test statistic needed for the CLs method.
         This method just sets the necessary attributes to use pseudo-experiments instead of the asymptotic formulae for the test statistic distributions.
@@ -71,9 +72,25 @@ class Limits:
         -----------
         n_pseudoexperiments: int
             The number of pseudo-experiments to generate.
+        read_pseudoexperiments_from_file: bool
+            If True, the pseudo-experiments will be read from a file instead of generated.
+        pseudoexperiments_file: str
+            The path to the file containing the pre-generated pseudo-experiments.
         """
         self.asymptotic = False
         self.n_pseudoexperiments = n_pseudoexperiments
+
+        if read_pseudoexperiments_from_file:
+            if os.path.exists(pseudoexperiments_file):
+                with open(pseudoexperiments_file, "rb") as f:
+                    self.dict_pseudoexperiments = pickle.load(f)
+                    # Pick an arbitrary key from the dict_pseudoexperiments to set self.n_pseudoexperiments
+                    _, arbitrary = list(self.dict_pseudoexperiments.items())[1]
+                    self.n_pseudoexperiments = len(arbitrary)
+                    print(arbitrary)
+            else:
+                print(f"File {pseudoexperiments_file} not found. Generating pseudo-experiments.")
+                self.dict_pseudoexperiments = {}
         return    
 
     def data_yields(self, asimov = False, mu = None):
@@ -104,7 +121,7 @@ class Limits:
             return mu * self.s + self.b + hat_hat_theta
 
     def nll_factory(self, n = None):
-        """
+        r"""
         Factory method to create the negative log-likelihood function.
         
         The negative log-likelihood function is -2 * log L(mu, theta) = -2 \sum_i (n_i \ln(\mu s_i + b_i + \theta_i) - (\mu s_i + b_i + \theta_i)) + \sum_{ij}\theta_i V^{-1}_{ij} \theta_j, where n is the data yields, b is the prefit background prediction, s is the signal template and V^{-1} is inverse of the covariance matrix.
@@ -207,9 +224,15 @@ class Limits:
         test_statistic_value: float
             The test statistic value for which to calculate the p-value.
         """
-        return scipy.stats.norm.sf(np.sqrt(test_statistic_value))
+        if self.asymptotic:
+            return scipy.stats.norm.sf(np.sqrt(test_statistic_value))
+        else:
+            mu = self.mu_tested
+            # if (mu, mu) not in self.dict_pseudoexperiments:
+            #     self.generate_pseudoexperiments(mu, mu)
+            return np.sum(self.dict_pseudoexperiments[(mu, mu)] >= test_statistic_value) / self.n_pseudoexperiments
 
-    def p_bkg_value(self, test_statistic_value, non_centrality):
+    def p_bkg_value(self, test_statistic_value):
         """
         Calculate the p-value from the "denominator of the CLs method".
 
@@ -221,12 +244,44 @@ class Limits:
         -----------
         test_statistic_value: float
             The test statistic value for which to calculate the p-value.
-        non_centrality: float
-            The non-centrality parameter of the test statistic distribution under the background-only hypothesis.
         """
-        return scipy.stats.norm.sf(np.sqrt(test_statistic_value) - np.sqrt(non_centrality))
+        if self.asymptotic:
+            return scipy.stats.norm.sf(np.sqrt(test_statistic_value) - np.sqrt(self.non_centrality))
+        else:
+            mu = self.mu_tested
+            # if (mu, 0) not in self.dict_pseudoexperiments:
+            #     self.generate_pseudoexperiments(mu, 0)
+            return np.sum(self.dict_pseudoexperiments[(mu, 0)] >= test_statistic_value) / self.n_pseudoexperiments
+    
+    def ppf_bkg(self, probability):
+        """
+        Calculate the quantile function (inverse CDF) of the test statistic distribution under the background-only hypothesis.
 
-    def cls_value(self, test_statistic_value, non_centrality, n_sigma = None):
+        Parameters:
+        -----------
+        probability: float
+            The probability for which to calculate the quantile.
+        non_centrality: float
+            The non-centrality parameter of the asymptotic test statistic distribution under the background-only hypothesis.
+            This parameter is only used when self.asymptotic is True.
+        mu: float
+            The tested mu value.
+            Only used when self.asymptotic is False.
+        """
+        if self.asymptotic:
+            sqrt_test_statistic_value = scipy.stats.norm.ppf(probability, loc = np.sqrt(self.non_centrality))
+            if sqrt_test_statistic_value < 0:
+                test_statistic_value = 0
+            else:
+                test_statistic_value = sqrt_test_statistic_value ** 2
+            return test_statistic_value
+        else:
+            mu = self.mu_tested
+            # if (mu, 0) not in self.dict_pseudoexperiments:
+            #     self.generate_pseudoexperiments(mu, 0)
+            return np.percentile(self.dict_pseudoexperiments[(mu, 0)], probability)
+
+    def cls_value(self, test_statistic_value, n_sigma = None):
         """
         Calculate the CLs value.
 
@@ -234,8 +289,6 @@ class Limits:
         -----------
         test_statistic_value: float
             The test statistic value for which to calculate the CLs value.
-        non_centrality: float
-            The non-centrality parameter of the test statistic distribution under the background-only hypothesis.
         n_sigma: float or None
             Number of standard deviations for expected limits.
             If None, calculate the CLs using the provided test statistic value.
@@ -249,14 +302,10 @@ class Limits:
         if n_sigma is not None:
             # For expected limits, we evaluate the median of the background-only test statistic distribution, and the quantiles corresponding to the n_sigma standard deviations, as the observed test statistic value.
             probability = scipy.stats.norm.cdf(n_sigma)
-            sqrt_test_statistic_value = scipy.stats.norm.ppf(probability, loc = np.sqrt(non_centrality))
-            if sqrt_test_statistic_value < 0:
-                test_statistic_value = 0
-            else:
-                test_statistic_value = sqrt_test_statistic_value ** 2
+            test_statistic_value = self.ppf_bkg(probability)
 
         # p-values
-        p_bkg = self.p_bkg_value(test_statistic_value, non_centrality)
+        p_bkg = self.p_bkg_value(test_statistic_value)
         p_sig = self.p_value(test_statistic_value)
 
         return p_sig / p_bkg
@@ -328,12 +377,24 @@ class Limits:
         cls_values = []
         p_values = []
         p_bkg_values = []
+        exp_cls_values = {n_sigma: [] for n_sigma in [-2, -1, 0, 1, 2]}
+        exp_cls_values['asimov'] = []
+
         for mu in mu_values:
             ts = self.test_statistic(nll, mu)
-            nc = self.test_statistic(nll_asimov, mu)
-            cls_values.append(self.cls_value(ts, nc))
+            self.mu_tested = mu
+            self.non_centrality = self.test_statistic(nll_asimov, mu)
+            if not self.asymptotic:
+                self.generate_pseudoexperiments()
+            cls_values.append(self.cls_value(ts))
             p_values.append(self.p_value(ts))
-            p_bkg_values.append(self.p_bkg_value(ts, nc))
+            p_bkg_values.append(self.p_bkg_value(ts))
+
+            for n_sigma in [-2, -1, 0, 1, 2]:
+                cls_value = self.cls_value(ts, n_sigma = n_sigma)
+                exp_cls_values[n_sigma].append(cls_value)
+            # The test statistic value for the Asimov dataset is equal to the non-centrality.
+            exp_cls_values['asimov'].append(self.cls_value(self.non_centrality))
 
         # Plot the p-value as a function of mu:
         plt.plot(mu_values, p_values, marker='o', label='p')
@@ -348,20 +409,10 @@ class Limits:
         plt.savefig(f'{self.outdir}/mu_scan_0.png')
         plt.close()
 
-        # Expected limits and their bands.
-        exp_cls_values = {n_sigma: [] for n_sigma in [-2, -1, 0, 1, 2]}
-        exp_cls_values['asimov'] = []
-        for mu in mu_values:
-            ts_dummy = 0
-            nc = self.test_statistic(nll_asimov, mu)
-            for n_sigma in [-2, -1, 0, 1, 2]:
-                cls_value = self.cls_value(ts_dummy, nc, n_sigma = n_sigma)
-                exp_cls_values[n_sigma].append(cls_value)
-            exp_cls_values['asimov'].append(self.cls_value(nc, nc))
-
-        # Draw the expected limit as a black dashed line.
-        # Draw the +- 1 sigma and +/- 2 sigma expected limits as green and yellow bands, respectively.
-        # Draw the observed CLs values as a black solid line.
+        # Plot the expected limits and their bands.
+        #   - Draw the expected limit as a black dashed line.
+        #   - Draw the +- 1 sigma and +/- 2 sigma expected limits as green and yellow bands, respectively.
+        #   - Draw the observed CLs values as a black solid line.
         plt.plot(mu_values, exp_cls_values[0], color='black', linestyle='dashed', label='Exp.')
         plt.fill_between(mu_values, exp_cls_values[-1], exp_cls_values[1], color='green', alpha=0.5, label='Exp. ± 1σ')
         plt.fill_between(mu_values, exp_cls_values[-2], exp_cls_values[2], color='yellow', alpha=0.5, label='Exp. ± 2σ')
@@ -400,12 +451,18 @@ class Limits:
 
         return results
     
-    # Generate the pseudo-experiments.
-    def generate_pseudoexperiments(self, mu_tested, mu_pe, n_pseudoexperiments):
+    def generate_pseudoexperiments(self):
+        self._generate_pseudoexperiments(self.mu_tested, 0)
+        self._generate_pseudoexperiments(self.mu_tested, self.mu_tested)
+        self.plot_pseudoexperiments()
+        return
+    
+    def _generate_pseudoexperiments(self, mu_tested, mu_pe):
         """
         Generate pseudo-experiments and calculate the test statistic value for each of them.
 
-        The pseudo-experiments are generated as Poisson fluctuations of the expected yields nu = mu_pe * s + b + hat_hat_theta(mu_pe), where hat_hat_theta(mu_pe) are the values of the nuisance parameters that minimize the negative log-likelihood for the given fixed value of mu_pe.
+        The pseudo-experiments are generated as Poisson fluctuations of the expected yields nu = mu_pe * s + b + hat_hat_theta(mu_pe),
+        where hat_hat_theta(mu_pe) are the values of the nuisance parameters that minimize the negative log-likelihood for the given fixed value of mu_pe.
 
         Parameters:
         -----------
@@ -417,17 +474,108 @@ class Limits:
             The number of pseudo-experiments to generate.
         """
 
+        # No need to generate the pseudo-experiments if they have already been generated for the given values of mu_tested and mu_pe.
+        if (mu_tested, mu_pe) in self.dict_pseudoexperiments:
+            return
+
         nu = self.data_yields(asimov = True, mu = mu_pe)
-        pseudo_experiments = np.random.poisson(nu, size=(n_pseudoexperiments, len(nu)))
+        pseudo_experiments = np.random.poisson(nu, size=(self.n_pseudoexperiments, len(nu)))
 
         ts_toys = []
-        for i in range(n_pseudoexperiments):
+        for i in range(self.n_pseudoexperiments):
             pseudo_n = pseudo_experiments[i]
             nll = self.nll_factory(pseudo_n)
             ts = self.test_statistic(nll, mu_tested, self.init_theta)
             ts_toys.append(ts)
 
-        return np.array(ts_toys)
+        self.dict_pseudoexperiments[(mu_tested, mu_pe)] = np.array(ts_toys)
+
+        return
+    
+    def plot_pseudoexperiments(self):
+        """
+        Plot the generated and asymptotic distributions of the test statistic.
+         
+        For the signal+background, the distribution is the half chi-square distribution,
+        which is a sum of two parts:
+          - the delta function at zero with weight 0.5
+          - the chi-square distribution with 1 degree of freedom with weight 0.5.
+
+        For the background-only, the distribution is a non-central chi-square distribution with 1 degree of freedom and non-centrality parameter equal to the value of the test statistic for the Asimov dataset with mu = 0.
+        """
+        from scipy.stats import chi2
+
+        n_bins = 10
+        upper_bound = 5
+        bin_edges = np.linspace(0, upper_bound, n_bins + 1)
+        bin_width = bin_edges[1] - bin_edges[0]
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+        # Histogram of the signal+background pseudoexperiments distribution.
+        plt.figure(figsize=(10, 6))
+        h, h_unc = self.histogram_pseudoexperiments(self.dict_pseudoexperiments[(self.mu_tested, self.mu_tested)], bin_edges)
+        plt.errorbar(bin_centers, h, yerr=h_unc, fmt='o', color='navy', label='Pseudo-experiments')
+
+        # Histogram of the signal+background asymptotic distribution.
+        half_chi2_hist = chi2.cdf(bin_edges[1:], df=1) - chi2.cdf(bin_edges[:-1], df=1)
+        half_chi2_hist[0] += 1 # Add the delta function at zero.
+        half_chi2_hist[-1] += chi2.sf(upper_bound, df=1) # Add the tail above the upper bound to the last bin.
+        half_chi2_hist *= 0.5 / bin_width  # Normalize by the bin width to get the probability density. The factor of 0.5 is due to the fact that we are summing two pdfs.
+        plt.stairs(half_chi2_hist, bin_edges, fill = False, label='Asymptotic', color='red')
+        plt.xlabel('Test statistic value')
+        plt.ylabel('Probability density')
+        plt.yscale('log')
+        plt.title('Distribution of Test Statistic from Pseudo-experiments')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f'{self.outdir}/pseudoexperiments_{self.mu_tested:.2f}_{0:.2f}.png')
+        plt.close()
+
+        # Evaluate the chi-square goodness of fit test for the histogram of the test statistic values from the pseudo-experiments, comparing it to the half chi-square distribution with 1 degree of freedom.
+        # For this, evaluate the expected number of pseudo-experiments in each bin according to the half chi-square distribution, and compare it to the observed number of pseudo-experiments in each bin.
+        observed_counts = h * self.n_pseudoexperiments * bin_width
+        expected_counts = half_chi2_hist * self.n_pseudoexperiments * bin_width
+        chi_squared_value = np.sum((observed_counts - expected_counts) ** 2 / expected_counts)
+        print(f'Chi-squared value: {chi_squared_value}')
+        # Calculate the p-value for the chi-square test with the appropriate number of degrees of freedom, which is the number of bins.
+        p_value = chi2.sf(chi_squared_value, df=n_bins)
+        print(f'Chi-squared test p-value: {p_value}')
+
+        return
+
+    def histogram_pseudoexperiments(self, pseudoexperiments, bin_edges):
+        """
+        Histogram the test statistic values from the pseudo-experiments and calculate the uncertainty on the histogram counts.
+
+        Parameters:
+        -----------
+        pseudoexperiments: array-like
+            The test statistic values from the pseudo-experiments.
+        bin_edges: array-like
+            The edges of the bins for the histogram.
+
+        Returns:
+        --------
+        h, h_unc: ndarray
+            The histogram of the test statistic values from the pseudo-experiments, normalized to form a probability density.
+            The uncertainty on the histogram counts, normalized in the same way as the histogram.
+        """
+        h, _ = np.histogram(pseudoexperiments, bins = bin_edges)
+        h[0] += np.sum(pseudoexperiments < 0)
+
+        # Add the events with test statistic value above the upper_bound to the last bin.
+        h[-1] += np.sum(pseudoexperiments > bin_edges[-1])
+
+        # Uncertainty on the histogram counts.
+        h_unc = np.sqrt(h)
+
+        # Normalize the histogram to form a probability density.
+        bin_width = bin_edges[1] - bin_edges[0]
+        h     = h / (self.n_pseudoexperiments * bin_width)
+        h_unc = h_unc / (self.n_pseudoexperiments * bin_width)
+
+        return h, h_unc
+
 
     
 if __name__ == "__main__":
@@ -436,7 +584,12 @@ if __name__ == "__main__":
     limits = Limits(s = s)
     # limits.set_cms_inputs("data/cms_monov_inputs.pkl")
     limits.set_cms_inputs("data/cms_monoj_inputs.pkl")
-    results = limits.limits(np.linspace(0, 10, 20))
+    limits.pseudoexperiments(n_pseudoexperiments = 1000, read_pseudoexperiments_from_file = True, pseudoexperiments_file = "limits/dict_pseudoexperiments.pkl")
+    results = limits.limits(np.linspace(2, 8, 4))
+
+    # Just for the code-development phase: pickle the self.dict_pseudoexperiments to a file.
+    with open("limits/dict_pseudoexperiments.pkl", "wb") as f:
+        pickle.dump(limits.dict_pseudoexperiments, f)
 
     # Read in the results from the pickle file and print the observed and expected limits.
     with open("limits/results.pkl", "rb") as f:
