@@ -32,13 +32,16 @@ class Limits:
         Default is "./limits".
     """
     def __init__(self, V = None, n = None, b = None, s = None, outdir = "./limits"):
-        self.V = V
-        self.n = n
-        self.b = b
-        self.s = s
-        self.outdir = outdir
-        self.init_theta = np.zeros_like(self.b)
-        self.asymptotic = True
+        self.V                     = V
+        self.n                     = n
+        self.b                     = b
+        self.s                     = s
+        self.outdir                = outdir
+        self.init_theta            = np.zeros_like(self.b)
+        self.asymptotic            = True
+        self.n_pseudoexperiments   = None
+        self.bkg_pseudoexperiments = None
+        self.sig_pseudoexperiments = None
         if not os.path.exists(outdir):
             os.makedirs(outdir)
 
@@ -59,41 +62,19 @@ class Limits:
         self.b = inputs['b']
         self.init_theta = np.zeros_like(self.b)
 
-    def generate_pseudoexperiments(self, n_toys = 1000):
+    def pseudoexperiments(self, n_pseudoexperiments = 1000):
         """
-        Generate pseudo-experiments to determine the distributions of the test statistic needed for the CLs method.
+        Use pseudo-experiments to determine the distributions of the test statistic needed for the CLs method.
+        This method just sets the necessary attributes to use pseudo-experiments instead of the asymptotic formulae for the test statistic distributions.
 
         Parameters:
         -----------
-        n_toys: int
+        n_pseudoexperiments: int
             The number of pseudo-experiments to generate.
         """
         self.asymptotic = False
-        self.signal_distribution = self.generate_signal_distribution(n_toys)
-        self.background_distribution = self.generate_background_distribution(n_toys)
-        return
-    
-    def generate_signal_distribution(self, n_toys):
-        """
-        Generate the distribution of the test statistic under the signal+background hypothesis (mu = 1).
-
-        Parameters:
-        -----------
-        n_toys: int
-            The number of pseudo-experiments to generate.
-        """
-        return
-    
-    def generate_background_distribution(self, n_toys):
-        """
-        Generate the distribution of the test statistic under the background-only hypothesis (mu = 0).
-
-        Parameters:
-        -----------
-        n_toys: int
-            The number of pseudo-experiments to generate.
-        """
-        return
+        self.n_pseudoexperiments = n_pseudoexperiments
+        return    
 
     def data_yields(self, asimov = False, mu = None):
         """
@@ -420,24 +401,40 @@ class Limits:
         return results
     
     # Generate the pseudo-experiments.
-    def generate_pseudo_experiments(self, mu, nu, n_toys = 1000):
-        pseudo_experiments = np.random.poisson(nu, size=(n_toys, len(nu)))
+    def generate_pseudoexperiments(self, mu_tested, mu_pe, n_pseudoexperiments):
+        """
+        Generate pseudo-experiments and calculate the test statistic value for each of them.
+
+        The pseudo-experiments are generated as Poisson fluctuations of the expected yields nu = mu_pe * s + b + hat_hat_theta(mu_pe), where hat_hat_theta(mu_pe) are the values of the nuisance parameters that minimize the negative log-likelihood for the given fixed value of mu_pe.
+
+        Parameters:
+        -----------
+        mu_tested: float
+            The tested value of the signal strength parameter - the value with which the test statistic is calculated.
+        mu_pe: float
+            The value of the signal strength parameter with which the pseudo-experiments are generated.
+        n_pseudoexperiments: int
+            The number of pseudo-experiments to generate.
+        """
+
+        nu = self.data_yields(asimov = True, mu = mu_pe)
+        pseudo_experiments = np.random.poisson(nu, size=(n_pseudoexperiments, len(nu)))
 
         ts_toys = []
-        for i in range(n_toys):
+        for i in range(n_pseudoexperiments):
             pseudo_n = pseudo_experiments[i]
             nll = self.nll_factory(pseudo_n)
-            ts = self.test_statistic(nll, mu, self.init_theta)
+            ts = self.test_statistic(nll, mu_tested, self.init_theta)
             ts_toys.append(ts)
 
         return np.array(ts_toys)
 
     
 if __name__ == "__main__":
-    s = np.array([1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 4, 6, 8, 10, 12, 14, 2, 4, 6, 8, 10, 12, 14]) * 0.5
+    # s = np.array([1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 2, 4, 6, 8, 10, 12, 14, 2, 4, 6, 8, 10, 12, 14]) * 0.5
     s = np.array([1.006524, 0.948773, 0.9858989, 1.056026, 1.072526, 1.167403, 1.485036, 1.592289, 1.612914, 1.678916, 2.165677, 2.330681, 2.211054, 2.145052, 2.025424, 2.392558, 2.149177, 1.827419, 1.905796, 1.563413, 1.518037, 2.037799, 1.151231, 1.056284, 1.145297, 1.240244, 1.258046, 1.418269, 1.620031, 2.160042, 2.225318, 2.302462, 2.990827, 3.251931, 3.0383, 3.032366, 2.866209, 3.412154, 2.907748, 2.516092, 2.676315, 2.290593, 2.189712, 2.854341])
     limits = Limits(s = s)
-    limits.set_cms_inputs("data/cms_monov_inputs.pkl")
+    # limits.set_cms_inputs("data/cms_monov_inputs.pkl")
     limits.set_cms_inputs("data/cms_monoj_inputs.pkl")
     results = limits.limits(np.linspace(0, 10, 20))
 
