@@ -87,7 +87,6 @@ class Limits:
                     # Pick an arbitrary key from the dict_pseudoexperiments to set self.n_pseudoexperiments
                     _, arbitrary = list(self.dict_pseudoexperiments.items())[1]
                     self.n_pseudoexperiments = len(arbitrary)
-                    print(arbitrary)
             else:
                 print(f"File {pseudoexperiments_file} not found. Generating pseudo-experiments.")
                 self.dict_pseudoexperiments = {}
@@ -279,7 +278,7 @@ class Limits:
             mu = self.mu_tested
             # if (mu, 0) not in self.dict_pseudoexperiments:
             #     self.generate_pseudoexperiments(mu, 0)
-            return np.percentile(self.dict_pseudoexperiments[(mu, 0)], probability)
+            return np.percentile(self.dict_pseudoexperiments[(mu, 0)], probability * 100)
 
     def cls_value(self, test_statistic_value, n_sigma = None):
         """
@@ -300,7 +299,9 @@ class Limits:
         """
 
         if n_sigma is not None:
-            # For expected limits, we evaluate the median of the background-only test statistic distribution, and the quantiles corresponding to the n_sigma standard deviations, as the observed test statistic value.
+            # For expected limits, we evaluate the median of the background-only test statistic distribution,
+            # and the quantiles corresponding to the n_sigma standard deviations,
+            # as the observed test statistic value.
             probability = scipy.stats.norm.cdf(n_sigma)
             test_statistic_value = self.ppf_bkg(probability)
 
@@ -346,7 +347,6 @@ class Limits:
             i -= 1
         return upper_limit
 
-
     def limits(self, mu_values = None, verbose = False):
         """
         Scan over the values of mu and calculate the p-values for each of them.
@@ -382,6 +382,7 @@ class Limits:
 
         for mu in mu_values:
             ts = self.test_statistic(nll, mu)
+            self.ts = ts
             self.mu_tested = mu
             self.non_centrality = self.test_statistic(nll_asimov, mu)
             if not self.asymptotic:
@@ -501,27 +502,66 @@ class Limits:
           - the delta function at zero with weight 0.5
           - the chi-square distribution with 1 degree of freedom with weight 0.5.
 
-        For the background-only, the distribution is a non-central chi-square distribution with 1 degree of freedom and non-centrality parameter equal to the value of the test statistic for the Asimov dataset with mu = 0.
+        For the background-only, the distribution is a non-central chi-square distribution
+        with 1 degree of freedom and non-centrality parameter equal to the value
+        of the test statistic for the Asimov dataset with mu = 0.
         """
-        from scipy.stats import chi2
+        from scipy.stats import chi2, norm
 
-        n_bins = 10
-        upper_bound = 5
+        plt.figure(figsize=(10, 6))
+
+        # Plot the signal+background distributions.
+        # -----------------------------------------
+        n_bins = 20
+        upper_bound = 10
         bin_edges = np.linspace(0, upper_bound, n_bins + 1)
         bin_width = bin_edges[1] - bin_edges[0]
         bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
-        # Histogram of the signal+background pseudoexperiments distribution.
-        plt.figure(figsize=(10, 6))
+        # S+B pseudoexperiments distribution.
         h, h_unc = self.histogram_pseudoexperiments(self.dict_pseudoexperiments[(self.mu_tested, self.mu_tested)], bin_edges)
-        plt.errorbar(bin_centers, h, yerr=h_unc, fmt='o', color='navy', label='Pseudo-experiments')
+        plt.errorbar(bin_centers, h, yerr=h_unc, fmt='o', color='navy', label='s+b, p.e.')
 
-        # Histogram of the signal+background asymptotic distribution.
+        # S+B asymptotic distribution.
         half_chi2_hist = chi2.cdf(bin_edges[1:], df=1) - chi2.cdf(bin_edges[:-1], df=1)
         half_chi2_hist[0] += 1 # Add the delta function at zero.
         half_chi2_hist[-1] += chi2.sf(upper_bound, df=1) # Add the tail above the upper bound to the last bin.
         half_chi2_hist *= 0.5 / bin_width  # Normalize by the bin width to get the probability density. The factor of 0.5 is due to the fact that we are summing two pdfs.
-        plt.stairs(half_chi2_hist, bin_edges, fill = False, label='Asymptotic', color='red')
+        plt.stairs(half_chi2_hist, bin_edges, fill = False, label='s+b, asymp.', color='navy')
+
+        # Plot the background-only distributions.
+        # ---------------------------------------
+        n_bins = 10
+        upper_bound = 30
+        bin_edges = np.linspace(0, upper_bound, n_bins + 1)
+        bin_width = bin_edges[1] - bin_edges[0]
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+        # B-only pseudo-experiments distribution.
+        h, h_unc = self.histogram_pseudoexperiments(self.dict_pseudoexperiments[(self.mu_tested, 0)], bin_edges)
+        plt.errorbar(bin_centers, h, yerr=h_unc, fmt='o', color='red', label='b, p.e.')
+
+        # B-only asymptotic distribution.
+        shift = np.sqrt(self.non_centrality)
+        half_chi2_hist = (norm.cdf(np.sqrt(bin_edges[1:]) - shift) - norm.cdf(np.sqrt(bin_edges[:-1]) - shift))
+        half_chi2_hist[0] += norm.cdf(-shift)  # Add the delta function at zero.
+        half_chi2_hist[-1] += norm.sf(np.sqrt(upper_bound) - shift) # Add the tail above the upper bound to the last bin.
+        half_chi2_hist /= bin_width  # Normalize by the bin width to get the probability density.
+        plt.stairs(half_chi2_hist, bin_edges, fill = False, label='b, asymp.', color='red')
+
+        # Plot various test statistic values.
+        # -----------------------------------
+
+        # self.ts and self.non_centrality as vertical lines.
+        plt.axvline(self.ts, color='black', linestyle='-', label='Obs. t.s.')
+        plt.axvline(self.non_centrality, color='cyan', linestyle='dashed', label='Asimov t.s.')
+
+        # Quantiles corresponding to the n_sigma standard deviations for the expected limits, as vertical lines.
+        for n_sigma, color in zip([-2, -1, 0, 1, 2], ['yellow', 'green', 'black', 'green', 'yellow']):
+            probability = scipy.stats.norm.cdf(n_sigma)
+            quantile = np.percentile(self.dict_pseudoexperiments[(self.mu_tested, 0)], probability * 100)
+            plt.axvline(quantile, color=color, linestyle='dashed', label=f'Exp. t.s. {n_sigma}σ')
+
         plt.xlabel('Test statistic value')
         plt.ylabel('Probability density')
         plt.yscale('log')
@@ -584,7 +624,7 @@ if __name__ == "__main__":
     limits = Limits(s = s)
     # limits.set_cms_inputs("data/cms_monov_inputs.pkl")
     limits.set_cms_inputs("data/cms_monoj_inputs.pkl")
-    limits.pseudoexperiments(n_pseudoexperiments = 1000, read_pseudoexperiments_from_file = True, pseudoexperiments_file = "limits/dict_pseudoexperiments.pkl")
+    # limits.pseudoexperiments(n_pseudoexperiments = 1000, read_pseudoexperiments_from_file = True, pseudoexperiments_file = "limits/dict_pseudoexperiments.pkl")
     results = limits.limits(np.linspace(2, 8, 4))
 
     # Just for the code-development phase: pickle the self.dict_pseudoexperiments to a file.
