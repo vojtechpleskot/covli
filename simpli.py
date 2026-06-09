@@ -624,7 +624,7 @@ if __name__ == "__main__":
     limits = Limits(s = s)
     # limits.set_cms_inputs("data/cms_monov_inputs.pkl")
     limits.set_cms_inputs("data/cms_monoj_inputs.pkl")
-    # limits.pseudoexperiments(n_pseudoexperiments = 1000, read_pseudoexperiments_from_file = True, pseudoexperiments_file = "limits/dict_pseudoexperiments.pkl")
+    limits.pseudoexperiments(n_pseudoexperiments = 1000) # Use pseudoexperiments instead of the asymptotic formulae for the test statistic distributions.
     results = limits.limits(np.linspace(2, 8, 4))
 
     # Just for the code-development phase: pickle the self.dict_pseudoexperiments to a file.
