@@ -163,7 +163,7 @@ class Limits:
             see the data_yields method
         """
         ts_obs = self.test_statistic(theta, asimov)
-        return scipy.stats.chi2.sf(ts_obs, df = 1)
+        return scipy.stats.norm.sf(np.sqrt(ts_obs))
     
     def non_centrality_parameter(self, theta, asimov = False):
         """
@@ -213,11 +213,15 @@ class Limits:
         if asimov and n_sigma is not None:
             # For expected limits, we evaluate the median of the background-only test statistic distribution, and the quantiles corresponding to the n_sigma standard deviations, as the observed test statistic value.
             probability = scipy.stats.norm.cdf(n_sigma)
-            ts = scipy.stats.ncx2.ppf(probability, df = 1, nc = nc)
+            sqrt_ts = scipy.stats.norm.ppf(probability, loc = np.sqrt(nc))
+            if sqrt_ts < 0:
+                ts = 0
+            else:
+                ts = sqrt_ts ** 2            
 
         # p-values
-        p_bkg = scipy.stats.ncx2.sf(ts, df = 1, nc = nc)
-        p_sig = scipy.stats.chi2.sf(ts, df = 1)
+        p_bkg = scipy.stats.norm.sf(np.sqrt(ts) - np.sqrt(nc))
+        p_sig = scipy.stats.norm.sf(np.sqrt(ts))
 
         return p_sig / p_bkg
     
@@ -237,7 +241,7 @@ class Limits:
         """
         ts = self.test_statistic(theta, asimov)
         nc = self.non_centrality_parameter(theta, asimov)
-        return scipy.stats.ncx2.sf(ts, df = 1, nc = nc)
+        return scipy.stats.norm.sf(np.sqrt(ts) - np.sqrt(nc))
     
     def find_upper_limit(self, theta_values, cls_values, cl = 95):
         """
